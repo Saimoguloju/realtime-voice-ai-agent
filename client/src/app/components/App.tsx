@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import Link from 'next/link';
 
 import type { PipecatBaseChildProps } from '@pipecat-ai/voice-ui-kit';
 import {
@@ -44,6 +45,11 @@ export const App = ({
           <div /> /* Spacer */
         )}
         <div className="flex items-center gap-4">
+          <Link
+            href="/dashboard"
+            className="text-sm underline underline-offset-4 opacity-70 hover:opacity-100">
+            Dashboard
+          </Link>
           <UserAudioControl size="lg" />
           <ConnectButton
             size="lg"

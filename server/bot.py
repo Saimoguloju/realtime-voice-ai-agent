@@ -21,6 +21,7 @@ Run the bot using::
 """
 
 import os
+import uuid
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -44,7 +45,22 @@ from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.workers.runner import WorkerRunner
 from pipecat_whisker import WhiskerObserver
 
+import storage
+from observers import LatencyMetricsObserver
+from tools import get_current_time, get_current_weather, search_knowledge_base
+
 load_dotenv(override=True)
+
+SYSTEM_INSTRUCTION = (
+    "You are Nimbus Assist, a friendly voice support agent for Nimbus, a project "
+    "management SaaS. Your responses will be spoken aloud, so avoid emojis, bullet "
+    "points, or other formatting that can't be spoken. Keep answers brief and "
+    "conversational. You have tools available: always call search_knowledge_base "
+    "before answering questions about Nimbus plans, billing, refunds, security, or "
+    "support; use get_current_weather and get_current_time when asked about weather "
+    "or time. If the knowledge base has no answer, say you are not sure and offer "
+    "to connect the user with a human."
+)
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
@@ -58,6 +74,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             standard web/telephony pipelines don't need it.
     """
     logger.info("Starting bot")
+
+    session_id = runner_args.session_id or str(uuid.uuid4())
+    storage.start_session(session_id)
 
     # Speech-to-Text service
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
@@ -75,11 +94,15 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         api_key=os.getenv("OPENAI_API_KEY"),
         settings=OpenAILLMService.Settings(
             model=os.getenv("OPENAI_MODEL", "gpt-4.1"),
-            system_instruction="You are a helpful assistant in a voice conversation. Your responses will be spoken aloud, so avoid emojis, bullet points, or other formatting that can't be spoken. Respond to what the user said in a creative, helpful, and brief way.",
+            system_instruction=SYSTEM_INSTRUCTION,
         ),
     )
 
-    context = LLMContext()
+    # Direct functions: schemas are derived from each function's signature and
+    # docstring, and handlers are registered automatically.
+    context = LLMContext(
+        tools=[get_current_weather, get_current_time, search_knowledge_base],
+    )
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
@@ -106,6 +129,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         ),
         observers=[
             WhiskerObserver(pipeline),
+            LatencyMetricsObserver(session_id),
         ],
     )
 
@@ -124,6 +148,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Client disconnected")
+        storage.end_session(session_id)
         await worker.cancel()
 
     @user_aggregator.event_handler("on_user_turn_stopped")
@@ -131,12 +156,16 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         timestamp = f"[{message.timestamp}] " if message.timestamp else ""
         line = f"{timestamp}user: {message.content}"
         logger.info(f"Transcript: {line}")
+        if message.content:
+            storage.add_message(session_id, "user", message.content)
 
     @assistant_aggregator.event_handler("on_assistant_turn_stopped")
     async def on_assistant_turn_stopped(aggregator, message: AssistantTurnStoppedMessage):
         timestamp = f"[{message.timestamp}] " if message.timestamp else ""
         line = f"{timestamp}assistant: {message.content}"
         logger.info(f"Transcript: {line}")
+        if message.content:
+            storage.add_message(session_id, "assistant", message.content)
 
     runner = WorkerRunner(handle_sigint=False)
 
@@ -159,7 +188,29 @@ async def bot(runner_args: RunnerArguments):
     await run_bot(transport, runner_args)
 
 
+def _register_dashboard_routes():
+    """Mount call-history and latency endpoints on the dev runner's FastAPI app."""
+    from pipecat.runner.run import app
+
+    @app.get("/api/dashboard/sessions")
+    async def dashboard_sessions():
+        return {"sessions": storage.list_sessions()}
+
+    @app.get("/api/dashboard/sessions/{session_id}/transcript")
+    async def dashboard_transcript(session_id: str):
+        return {
+            "session_id": session_id,
+            "transcript": storage.get_transcript(session_id),
+            "metrics": storage.get_metrics_summary(session_id),
+        }
+
+    @app.get("/api/dashboard/metrics")
+    async def dashboard_metrics():
+        return {"metrics": storage.get_metrics_summary()}
+
+
 if __name__ == "__main__":
     from pipecat.runner.run import main
 
+    _register_dashboard_routes()
     main()

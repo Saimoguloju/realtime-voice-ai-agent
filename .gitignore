@@ -229,3 +229,7 @@ client/.turbo/
 client/.vercel
 client/.env*.local
 client/*.tsbuildinfo
+
+# Voice agent local data (SQLite, embedding cache)
+server/data/
+server/knowledge/.embeddings_cache.json

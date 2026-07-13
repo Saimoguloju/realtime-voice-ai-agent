@@ -1,158 +1,122 @@
-# pipecat-voice-agent
+# Realtime Voice AI Agent (Pipecat)
 
-A Pipecat AI voice agent built with a cascade pipeline (STT → LLM → TTS).
+A production-shaped, real-time voice AI agent built on [Pipecat](https://github.com/pipecat-ai/pipecat):
+a streaming **STT → LLM → TTS** cascade over **WebRTC**, with **function calling**,
+**RAG grounding**, **persistent call transcripts**, and a **latency dashboard**
+(p50/p95 per pipeline stage).
 
-## Configuration
-
-- **Bot Type**: Web
-- **Transport(s)**: SmallWebRTC
-- **Pipeline**: Cascade
-  - **STT**: Deepgram
-  - **LLM**: OpenAI
-  - **TTS**: Cartesia
-- **Features**:
-  - Transcription
-  - Observability (Whisker)
-
-## Setup
-
-### Server
-
-1. **Navigate to server directory**:
-
-   ```bash
-   cd server
-   ```
-
-2. **Install dependencies**:
-
-   ```bash
-   uv sync
-   ```
-
-3. **Configure environment variables**:
-
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your API keys
-   ```
-
-4. **Run the bot**:
-
-   ```bash
-   uv run bot.py
-   ```
-
-   The runner serves every transport; the caller selects which one (a web/mobile
-   client picks its transport when it connects; a telephony provider connects to
-   `/ws`).
-
-### Client
-
-1. **Navigate to client directory**:
-
-   ```bash
-   cd client
-   ```
-
-2. **Install dependencies**:
-
-   ```bash
-   npm install
-   ```
-
-3. **Configure environment variables**:
-
-   ```bash
-   cp env.example .env.local
-   # Edit .env.local if needed (defaults to localhost:7860)
-   ```
-
-
-4. **Run development server**:
-
-   ```bash
-   npm run dev
-   ```
-
-5. **Open browser**:
-
-   http://localhost:3000
-
-## Project Structure
+## Architecture
 
 ```
-pipecat-voice-agent/
-├── server/              # Python bot server
-│   ├── bot.py           # Main bot implementation
-│   ├── pyproject.toml   # Python dependencies
-│   ├── env.example      # Environment variables template
-│   ├── .env             # Your API keys (git-ignored)
-│   ├── Dockerfile       # Container image for Pipecat Cloud
-│   └── pcc-deploy.toml  # Pipecat Cloud deployment config
-├── client/              # React application
-│   ├── src/             # Client source code
-│   ├── package.json     # Node dependencies
-│   └── ...
-├── .gitignore           # Git ignore patterns
-└── README.md            # This file
+Browser (Next.js + @pipecat-ai/client-js)
+   │  WebRTC (SmallWebRTC transport)
+   ▼
+Pipecat pipeline (Python, asyncio)
+   ├── Deepgram STT        — streaming speech-to-text
+   ├── Silero VAD          — turn detection / barge-in (interruptions)
+   ├── OpenAI LLM (gpt-4.1) — with function calling:
+   │     ├── search_knowledge_base  → RAG (OpenAI embeddings + cosine over local docs)
+   │     ├── get_current_weather    → live Open-Meteo API
+   │     └── get_current_time      → timezone-aware clock
+   ├── Cartesia TTS        — streaming text-to-speech
+   │
+   ├── LatencyMetricsObserver → SQLite (per-service TTFB + processing time)
+   ├── Transcript persistence → SQLite (every user/assistant turn)
+   └── Whisker observer       → live pipeline debugger
+   │
+   ▼
+Dashboard API (/api/dashboard/*) → Next.js dashboard (/dashboard)
 ```
 
-## Deploying to Pipecat Cloud
+## Features
 
-This project is configured for deployment to Pipecat Cloud. You can learn how to deploy to Pipecat Cloud in the [Pipecat Quickstart Guide](https://docs.pipecat.ai/getting-started/quickstart#step-2-deploy-to-production).
+| Feature | Where | What it demonstrates |
+|---|---|---|
+| Streaming voice pipeline | `server/bot.py` | Real-time cascade orchestration, interruption handling via VAD |
+| Function calling (tools) | `server/tools.py` | LLM tool use with schemas auto-derived from signatures/docstrings |
+| RAG knowledge base | `server/knowledge.py`, `server/knowledge/` | Embedding search (OpenAI `text-embedding-3-small`), disk-cached vectors |
+| Call persistence | `server/storage.py` | SQLite session/transcript/metrics storage |
+| Latency observability | `server/observers.py` | Per-service TTFB & processing time, p50/p95 aggregation |
+| Ops dashboard | `client/src/app/dashboard/` | Call history, transcripts, latency table |
+| Live pipeline debugging | Whisker | Frame-level pipeline introspection |
 
-Refer to the [Pipecat Cloud Documentation](https://docs.pipecat.ai/deployment/pipecat-cloud/introduction) to learn more about configuring, deploying, and managing your agents in Pipecat Cloud.
+## Quick start
 
-## Observability
+**Prereqs:** Python 3.11+, [uv](https://docs.astral.sh/uv/), Node 20+, and API keys for
+[Deepgram](https://deepgram.com), [OpenAI](https://platform.openai.com), and
+[Cartesia](https://cartesia.ai) (all have free tiers/credits).
 
-This project includes observability tools to help you debug and monitor your bot:
-
-### Whisker - Live Pipeline Debugger
-
-**Whisker** is a live graphical debugger that lets you visualize pipelines and debug frames in real time.
-
-With Whisker you can:
-
-- 🗺️ View a live graph of your pipeline
-- ⚡ Watch frame processors flash in real time as frames pass through them
-- 📌 Select a processor to inspect the frames it has handled
-- 🔍 Filter frames by name to quickly find the ones you care about
-- 🧵 Select a frame to trace its full path through the pipeline
-- 💾 Save and load previous sessions for review and troubleshooting
-
-**To use Whisker:**
-
-1. Run an ngrok tunnel to expose your bot:
-
-   ```bash
-   ngrok http 9090
-   ```
-
-   > Tip: Use `--subdomain` for a repeatable ngrok URL
-
-2. Navigate to [https://whisker.pipecat.ai/](https://whisker.pipecat.ai/) and enter your ngrok URL (e.g., `your-subdomain.ngrok.io`)
-
-3. Once your bot is running, press connect
-## Building with an AI coding agent
-
-Extending this bot with Claude Code, Codex, or another AI coding assistant? Give it live, accurate Pipecat context instead of stale training data with the **Pipecat Context Hub** — a local index of Pipecat docs, examples, and API source your agent queries over MCP:
+### 1. Server
 
 ```bash
-# Build the local index (first run takes a couple of minutes)
-uvx pipecat-ai-context-hub@latest refresh
-
-# Add it to your agent (use the line for the one you use)
-claude mcp add pipecat-context-hub -- uvx pipecat-ai-context-hub serve   # Claude Code
-codex mcp add pipecat-context-hub -- uvx pipecat-ai-context-hub serve    # Codex
+cd server
+uv sync
+cp .env.example .env      # then add your API keys
+uv run bot.py
 ```
 
-MCP servers load at session start, so add it before opening your coding session. See the [Pipecat Context Hub docs](https://docs.pipecat.ai/api-reference/context-hub) for the full setup.
+### 2. Client
 
-## Learn More
+```bash
+cd client
+npm install
+cp env.example .env.local
+npm run dev
+```
 
-- [Pipecat Documentation](https://docs.pipecat.ai/)
-- [Voice UI Kit Documentation](https://voiceuikit.pipecat.ai/)
-- [Pipecat GitHub](https://github.com/pipecat-ai/pipecat)
-- [Pipecat Examples](https://github.com/pipecat-ai/pipecat-examples)
-- [Discord Community](https://discord.gg/pipecat)
+Open **http://localhost:3000**, click Connect, and talk. Try:
+
+- *"What plans does Nimbus offer?"* → triggers the RAG knowledge-base tool
+- *"What's the weather in Berlin?"* → triggers the live weather tool
+- Interrupt it mid-sentence → VAD barge-in cancels TTS and yields the turn
+
+Then open **http://localhost:3000/dashboard** to see the call transcript and
+per-stage latency (p50/p95) for every session.
+
+## Customizing the knowledge base
+
+Drop your own markdown files into `server/knowledge/` — product docs, policies,
+FAQs. They're chunked, embedded once (cached in `.embeddings_cache.json`), and
+searched at call time. The demo content is a fictional SaaS FAQ.
+
+## Latency notes
+
+Conversational quality is dominated by perceived responsiveness. This project
+measures it rather than guessing:
+
+- Every service reports **TTFB** (time to first byte) per turn.
+- The observer persists them; the dashboard aggregates **p50/p95 per stage**.
+- Voice-to-voice latency ≈ STT finalization + LLM TTFB + TTS TTFB; the cascade
+  streams every stage so synthesis starts before the LLM finishes.
+
+## Project structure
+
+```
+├── server/                  # Python backend (uv-managed)
+│   ├── bot.py               # Pipeline assembly, event handlers, dashboard API
+│   ├── tools.py             # Function-calling tools (weather, time, RAG search)
+│   ├── knowledge.py         # Embedding index over server/knowledge/*.md
+│   ├── storage.py           # SQLite: sessions, transcripts, metrics
+│   ├── observers.py         # Latency metrics observer
+│   ├── knowledge/           # Markdown knowledge base (RAG source)
+│   ├── Dockerfile           # Container image (Pipecat Cloud-ready)
+│   └── pyproject.toml
+├── client/                  # Next.js frontend
+│   └── src/app/
+│       ├── page.tsx          # Voice call UI (voice-ui-kit)
+│       ├── dashboard/        # Call history + latency dashboard
+│       └── api/              # Proxies to the bot server
+└── README.md
+```
+
+## Deployment
+
+The server ships with a `Dockerfile` and `pcc-deploy.toml` for
+[Pipecat Cloud](https://docs.pipecat.ai/deployment/pipecat-cloud), or deploy the
+container anywhere (Fly.io, AWS). The client deploys to Vercel; point
+`BOT_START_URL` at your server.
+
+## Stack
+
+Python 3.11+ · asyncio · Pipecat 1.5 · FastAPI · Deepgram · OpenAI (LLM + embeddings) ·
+Cartesia · Silero VAD · WebRTC (aiortc) · SQLite · Next.js 16 · React 19 · Tailwind 4
